@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+  workflow_dispatch:
+
+env:
+  REGISTRY: "127.0.0.1:5000"
+  VERSION: "0.0.1"
+  REGISTRY_TAG_DOC: "fhvdevops/goa.systems.documentation"
+  REGISTRY_TAG_APP: "fhvdevops/goa.systems.application"
+  CONTAINER_NAME_DOC: "goa-sys-doc"
+  CONTAINER_NAME_APP: "goa-sys-app"
+
+jobs:
+  build:
+    runs-on: fhv
+    steps:
+      - name: Set permissions
+        run: |
+          docker run --rm -v "$PWD":/project bash:latest chown --recursive $(id -u):$(id -g) /project
+      - uses: actions/checkout@v4
+      - name: Build pdf documentation
+        run: |
+          DATE=$(date +%F)
+          sed -E "s/\\{DATE\\}/${DATE}/g" -i docs/metadata.yml
+          sed -E "s/\\{VERSION\\}/${VERSION}/g" -i docs/metadata.yml
+          docker run --rm -v "${PWD}:/data" -u $(id -u):$(id -g) pandoc/extra docs/README.md -o "documentation.pdf" --template eisvogel --listings --metadata-file=docs/metadata.yml
+          echo "Writing documentation into static folder to be served by SpringBoot."
+          docker run --rm -v "${PWD}:/data" -u $(id -u):$(id -g) pandoc/extra docs/README.md -o "src/main/resources/static/documentation.pdf" --template eisvogel --listings --metadata-file=docs/metadata.yml
+      - name: Build application
+        run: |
+          docker run --rm -v "$PWD":"/home/gradle/project" -w "/home/gradle/project" gradle:jdk17 gradle build
+          docker run --rm -v "$PWD":/project bash:latest chown --recursive $(id -u):$(id -g) /project
+      - name: Create application image
+        run: |
+          docker image rm exappimg || true
+          docker buildx build -f Distribution.Dockerfile -t exappimg .
+      - name: Build html documentation
+        run: |
+          docker run --rm -v "${PWD}:/docs" -w "/docs" -u $(id -u):$(id -g) squidfunk/mkdocs-material build
+          tar -c -z -f example.tar.gz -C site .
+          docker image rm exdocimg || true
+          docker buildx build -f Documentation.Dockerfile -t exdocimg .
+      - name: Re-tag images
+        run: |
+          docker image tag exdocimg ${REGISTRY}/${REGISTRY_TAG_DOC}:${VERSION}
+          docker image tag exappimg ${REGISTRY}/${REGISTRY_TAG_APP}:${VERSION}
+      - name: Push images
+        run: |
+          docker image push ${REGISTRY}/${REGISTRY_TAG_DOC}:${VERSION}
+          docker image push ${REGISTRY}/${REGISTRY_TAG_APP}:${VERSION}
+      - name: Run containers
+        run: |
+          echo "Stopping containers in case they are already running."
+          docker container stop ${CONTAINER_NAME_APP} || true
+          docker container stop ${CONTAINER_NAME_DOC} || true
+          
+          echo "Removing existing containers"
+          docker container rm ${CONTAINER_NAME_APP} || true
+          docker container rm ${CONTAINER_NAME_DOC} || true
+
+          echo "Launching applications from local registry"
+          docker run --name ${CONTAINER_NAME_APP} -d -p 8080:80   ${REGISTRY}/${REGISTRY_TAG_DOC}:${VERSION}
+          docker run --name ${CONTAINER_NAME_DOC} -d -p 8081:8080 ${REGISTRY}/${REGISTRY_TAG_APP}:${VERSION}
+      - name: Upload pdf documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf
+          path: |
+            documentation.pdf
+      - name: Upload html documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: |
+            example.tar.gz

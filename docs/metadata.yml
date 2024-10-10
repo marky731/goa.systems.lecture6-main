@@ -1,0 +1,9 @@
+titlepage: true
+title: "Test"
+subtitle: "Version {VERSION}"
+author: [Andreas Gottardi]
+date: "{DATE}"
+keywords: [GOA systems, Maven]
+titlepage-background: "docs/media/title-background.pdf"
+page-background: "docs/media/page-background.pdf"
+page-background-opacity: 1.0
